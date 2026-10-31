@@ -33,6 +33,7 @@ import { HistorialAccion } from './orders/historial-accion.entity';
       entities: [User, RoleAuditLog, Customer, Vehicle, Order, Photo, Finding, HistorialAccion],
       synchronize: true,   // crea las tablas automáticamente
       charset: 'utf8mb4',
+      ssl: process.env.DB_SSL === 'true' ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : false,
     }),
     OrdersModule,
     UsersModule,
