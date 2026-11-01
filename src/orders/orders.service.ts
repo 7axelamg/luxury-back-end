@@ -172,41 +172,34 @@ export class OrdersService implements OnModuleInit {
 
   /**
    * Crea una orden.
+   * Solo requiere placa y vehículo (marca y modelo).
    * `recibidoPorId` y `sedeId` provienen SIEMPRE del JWT, nunca del body.
    */
   async create(dto: any, userOrId?: any): Promise<any> {
-    if (!dto.nombreCliente || !dto.nombreCliente.trim()) {
-      throw new BadRequestException('El nombre del cliente es obligatorio (mínimo 3 caracteres)');
+    const placa = (dto.placa || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!placa || placa.length < 5 || placa.length > 7) {
+      throw new BadRequestException('La placa debe ser alfanumérica de 5 a 6 caracteres en mayúsculas sin espacios');
     }
-    const documento = (dto.documento || '').toString().trim();
-    if (!/^[0-9]{6,12}$/.test(documento)) {
-      throw new BadRequestException('El documento debe contener solo dígitos (entre 6 y 12 caracteres)');
-    }
-    const telefono = (dto.telefono || '').toString().trim();
-    if (!/^[0-9]{10}$/.test(telefono)) {
-      throw new BadRequestException('El teléfono móvil debe contener exactamente 10 dígitos numéricos');
-    }
-    const placa = (dto.placa || '').toString().trim().toUpperCase();
-    if (!/^[A-Z0-9]{5,6}$/.test(placa)) {
-      throw new BadRequestException('La placa debe ser alfanumérica de máximo 6 caracteres en mayúsculas sin espacios ni símbolos');
+    const vehiculoText = (dto.vehiculo || (dto.marca || dto.modelo ? `${dto.marca || ''} ${dto.modelo || ''}`.trim() : '')).toString().trim();
+    if (!vehiculoText) {
+      throw new BadRequestException('El campo vehículo (marca y modelo) es obligatorio');
     }
 
-    // 1. Buscar o crear cliente
-    let customer = await this.customerRepo.findOne({
-      where: { cedula: documento },
-    });
-    if (!customer) {
-      customer = this.customerRepo.create({
-        id: uuidv4(),
-        nombre: dto.nombreCliente.trim(),
-        telefono: telefono,
-        cedula: documento,
-      });
-      await this.customerRepo.save(customer);
-    } else {
-      customer.nombre = dto.nombreCliente.trim();
-      customer.telefono = telefono;
-      await this.customerRepo.save(customer);
+    // 1. Cliente opcional para compatibilidad con órdenes antiguas
+    let customerId: string | null = null;
+    if (dto.documento && dto.nombreCliente) {
+      const documento = (dto.documento || '').toString().trim();
+      let customer = await this.customerRepo.findOne({ where: { cedula: documento } });
+      if (!customer) {
+        customer = this.customerRepo.create({
+          id: uuidv4(),
+          nombre: dto.nombreCliente.trim(),
+          telefono: (dto.telefono || '').toString().trim(),
+          cedula: documento,
+        });
+        await this.customerRepo.save(customer);
+      }
+      customerId = customer.id;
     }
 
     // 2. Buscar o crear vehículo
@@ -216,14 +209,20 @@ export class OrdersService implements OnModuleInit {
     if (!vehicle) {
       vehicle = this.vehicleRepo.create({
         id: uuidv4(),
-        customer_id: customer.id,
+        customer_id: customerId,
         placa: placa,
-        marca: (dto.marca || '').trim(),
+        vehiculo: vehiculoText,
+        marca: (dto.marca || vehiculoText).trim(),
         modelo: (dto.modelo || '').trim(),
         color: (dto.color || '').trim(),
         kilometraje: dto.kilometraje || 0,
       });
       await this.vehicleRepo.save(vehicle);
+    } else {
+      if (!vehicle.vehiculo || vehicle.vehiculo !== vehiculoText) {
+        vehicle.vehiculo = vehiculoText;
+        await this.vehicleRepo.save(vehicle);
+      }
     }
 
     // 3. Resolver usuario y sede desde el JWT (NUNCA del body)
@@ -246,11 +245,12 @@ export class OrdersService implements OnModuleInit {
     const orderId = dto.id || this.generateOrderId();
     const order = new Order();
     order.id = orderId;
-    order.customer_id = customer.id;
+    order.customer_id = customerId;
     order.vehicle_id = vehicle.id;
+    order.vehiculo = vehiculoText;
     order.paso_actual = 1;
     order.estado = 'Recepción completada';
-    order.kilometraje = dto.kilometraje;
+    order.kilometraje = dto.kilometraje || null;
     order.observaciones = dto.observaciones || '';
     order.pertenencias = dto.pertenencias || '';
     order.recibido_por_id = effectiveUserId;
@@ -266,7 +266,7 @@ export class OrdersService implements OnModuleInit {
     historyItem.sede_id = userSedeId;
     historyItem.etapa = 1;
     historyItem.accion = 'Ingresó el vehículo';
-    historyItem.detalle = `Recepción inicial de ${vehicle.marca} ${vehicle.modelo} (Placa: ${vehicle.placa})`;
+    historyItem.detalle = `Recepción de ${vehiculoText} (Placa: ${vehicle.placa})`;
     historyItem.fecha = new Date();
     await this.historyRepo.save(historyItem);
 
@@ -478,14 +478,17 @@ export class OrdersService implements OnModuleInit {
 
   // Mapa interno Order → DTO compatible con el frontend
   private mapToDto(o: Order): any {
+    const vehiculoNombre =
+      o.vehiculo ||
+      o.vehicle?.vehiculo ||
+      (o.vehicle ? `${o.vehicle.marca || ''} ${o.vehicle.modelo || ''}`.trim() : '');
+
     return {
       id: o.id,
-      cliente: o.customer?.nombre || '',
+      cliente: vehiculoNombre,
       documento: o.customer?.cedula || '',
       telefono: o.customer?.telefono || '',
-      vehiculo: o.vehicle
-        ? `${o.vehicle.marca} ${o.vehicle.modelo} (${o.vehicle.placa})`
-        : '',
+      vehiculo: vehiculoNombre,
       placa: o.vehicle?.placa || '',
       estado: o.estado,
       pasoActual: o.paso_actual,

@@ -12,19 +12,22 @@ export class Order {
   @PrimaryColumn({ type: 'varchar', length: 64 })
   id: string;
 
-  @Column({ name: 'customer_id' })
-  customer_id: string;
+  @Column({ name: 'customer_id', type: 'varchar', length: 64, nullable: true })
+  customer_id: string | null;
 
-  @ManyToOne(() => Customer, { eager: true })
+  @ManyToOne(() => Customer, { eager: true, nullable: true })
   @JoinColumn({ name: 'customer_id' })
-  customer: Customer;
+  customer: Customer | null;
 
-  @Column({ name: 'vehicle_id' })
-  vehicle_id: string;
+  @Column({ name: 'vehicle_id', type: 'varchar', length: 64, nullable: true })
+  vehicle_id: string | null;
 
-  @ManyToOne(() => Vehicle, { eager: true })
+  @ManyToOne(() => Vehicle, { eager: true, nullable: true })
   @JoinColumn({ name: 'vehicle_id' })
-  vehicle: Vehicle;
+  vehicle: Vehicle | null;
+
+  @Column({ name: 'vehiculo', type: 'varchar', length: 255, nullable: true })
+  vehiculo: string | null;
 
   @Column({ name: 'paso_actual', default: 1 })
   paso_actual: number;

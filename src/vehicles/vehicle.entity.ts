@@ -9,10 +9,13 @@ export class Vehicle {
   @Column({ length: 20, unique: true })
   placa: string;
 
-  @Column({ length: 100 })
+  @Column({ length: 255, nullable: true })
+  vehiculo: string;
+
+  @Column({ length: 100, nullable: true })
   marca: string;
 
-  @Column({ length: 100 })
+  @Column({ length: 100, nullable: true })
   modelo: string;
 
   @Column({ nullable: true })
@@ -24,10 +27,10 @@ export class Vehicle {
   @Column({ nullable: true })
   kilometraje: number;
 
-  @ManyToOne(() => Customer, { eager: true })
+  @ManyToOne(() => Customer, { eager: true, nullable: true })
   @JoinColumn({ name: 'customer_id' })
-  customer: Customer;
+  customer: Customer | null;
 
-  @Column({ name: 'customer_id' })
-  customer_id: string;
+  @Column({ name: 'customer_id', type: 'varchar', length: 64, nullable: true })
+  customer_id: string | null;
 }

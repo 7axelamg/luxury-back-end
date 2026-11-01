@@ -184,6 +184,41 @@ async function runMigration() {
   `, [defaultSedeId]);
   console.log('✓ Órdenes e historial vinculados a sede y recibidoPorId.');
 
+  // 9. Simplificación de orden y vehículo: agregar columna `vehiculo` y hacer `customer_id` nullable
+  try {
+    await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+
+    const [vCols] = await conn.query('DESCRIBE vehicles');
+    const vColNames = vCols.map(c => c.Field);
+    if (!vColNames.includes('vehiculo')) {
+      await conn.query('ALTER TABLE `vehicles` ADD COLUMN `vehiculo` VARCHAR(255) NULL AFTER `placa`');
+    }
+    await conn.query('ALTER TABLE `vehicles` MODIFY COLUMN `customer_id` VARCHAR(64) NULL');
+    await conn.query('ALTER TABLE `vehicles` MODIFY COLUMN `marca` VARCHAR(100) NULL');
+    await conn.query('ALTER TABLE `vehicles` MODIFY COLUMN `modelo` VARCHAR(100) NULL');
+    await conn.query('UPDATE `vehicles` SET `vehiculo` = TRIM(CONCAT(COALESCE(marca, ""), " ", COALESCE(modelo, ""))) WHERE `vehiculo` IS NULL OR `vehiculo` = ""');
+    console.log('✓ Tabla `vehicles` actualizada con campo `vehiculo`.');
+
+    const [oCols] = await conn.query('DESCRIBE orders');
+    const oColNames = oCols.map(c => c.Field);
+    if (!oColNames.includes('vehiculo')) {
+      await conn.query('ALTER TABLE `orders` ADD COLUMN `vehiculo` VARCHAR(255) NULL AFTER `vehicle_id`');
+    }
+    await conn.query('ALTER TABLE `orders` MODIFY COLUMN `customer_id` VARCHAR(64) NULL');
+    await conn.query('ALTER TABLE `orders` MODIFY COLUMN `vehicle_id` VARCHAR(64) NULL');
+    await conn.query(`
+      UPDATE \`orders\` o
+      LEFT JOIN \`vehicles\` v ON o.vehicle_id = v.id
+      SET o.vehiculo = COALESCE(NULLIF(v.vehiculo, ''), TRIM(CONCAT(COALESCE(v.marca, ""), " ", COALESCE(v.modelo, ""))))
+      WHERE o.vehiculo IS NULL OR o.vehiculo = ""
+    `);
+    console.log('✓ Tabla `orders` actualizada con campo `vehiculo` migrado de marca y modelo.');
+  } catch (e) {
+    console.log('  ! Aviso en migración de vehiculo:', e.message);
+  } finally {
+    await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+  }
+
   console.log('--- MIGRACIÓN COMPLETADA CON ÉXITO ---');
   await conn.end();
 }
