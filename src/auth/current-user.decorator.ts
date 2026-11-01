@@ -2,8 +2,11 @@ import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 
 export interface AuthUserPayload {
   id: string;
+  userId?: string;
   username: string;
   role: string;
+  rol?: string;
+  sedeId?: string | null;
 }
 
 export const CurrentUser = createParamDecorator(
@@ -22,9 +25,12 @@ export const CurrentUser = createParamDecorator(
           const payloadJson = Buffer.from(parts[1], 'base64').toString('utf8');
           const payload = JSON.parse(payloadJson);
           return {
-            id: payload.sub,
+            id: payload.sub || payload.userId,
+            userId: payload.userId || payload.sub,
             username: payload.username,
-            role: payload.role,
+            role: payload.role || payload.rol,
+            rol: payload.rol || payload.role,
+            sedeId: payload.sedeId || null,
           };
         }
       } catch {

@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { Sede } from '../sedes/sede.entity';
 
 export enum UserRole {
   RECEPCIONISTA = 'RECEPCIONISTA',
@@ -48,6 +49,22 @@ export class User {
 
   @Column({ default: true })
   activo: boolean;
+
+  @Column({ name: 'sede_id', type: 'varchar', length: 64, nullable: true })
+  sedeId: string | null;
+
+  @ManyToOne(() => Sede, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'sede_id' })
+  sede: Sede | null;
+
+  @Column({ name: 'debe_cambiar_password', default: false })
+  debeCambiarPassword: boolean;
+
+  @Column({ name: 'intentos_fallidos', default: 0 })
+  intentosFallidos: number;
+
+  @Column({ name: 'bloqueado_hasta', type: 'timestamp', nullable: true })
+  bloqueadoHasta: Date | null;
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   created_at: Date;

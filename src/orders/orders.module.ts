@@ -7,9 +7,19 @@ import { Customer } from '../customers/customer.entity';
 import { Vehicle } from '../vehicles/vehicle.entity';
 import { HistorialAccion } from './historial-accion.entity';
 import { User } from '../users/user.entity';
+import { Sede } from '../sedes/sede.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, Customer, Vehicle, HistorialAccion, User])],
+  imports: [
+    TypeOrmModule.forFeature([
+      Order,
+      Customer,
+      Vehicle,
+      HistorialAccion,
+      User,
+      Sede,
+    ]),
+  ],
   controllers: [OrdersController],
   providers: [OrdersService],
   exports: [OrdersService],

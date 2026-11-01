@@ -9,6 +9,7 @@ import { CustomersModule } from './customers/customers.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 import { AuthModule } from './auth/auth.module';
 import { FindingsModule } from './findings/findings.module';
+import { SedesModule } from './sedes/sedes.module';
 
 // Entities
 import { User } from './users/user.entity';
@@ -19,6 +20,7 @@ import { Order } from './orders/order.entity';
 import { Photo } from './orders/photo.entity';
 import { Finding } from './findings/finding.entity';
 import { HistorialAccion } from './orders/historial-accion.entity';
+import { Sede } from './sedes/sede.entity';
 
 @Module({
   imports: [
@@ -30,8 +32,18 @@ import { HistorialAccion } from './orders/historial-accion.entity';
       username: process.env.DB_USER || 'root',
       password: process.env.DB_PASS || 'Victus2025',
       database: process.env.DB_NAME || 'luxury_service',
-      entities: [User, RoleAuditLog, Customer, Vehicle, Order, Photo, Finding, HistorialAccion],
-      synchronize: true,   // crea las tablas automáticamente
+      entities: [
+        User,
+        RoleAuditLog,
+        Customer,
+        Vehicle,
+        Order,
+        Photo,
+        Finding,
+        HistorialAccion,
+        Sede,
+      ],
+      synchronize: true, // crea las tablas automáticamente
       charset: 'utf8mb4',
       ssl: process.env.DB_SSL === 'true' ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : false,
     }),
@@ -41,9 +53,9 @@ import { HistorialAccion } from './orders/historial-accion.entity';
     VehiclesModule,
     AuthModule,
     FindingsModule,
+    SedesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
-

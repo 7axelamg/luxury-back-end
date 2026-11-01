@@ -5,6 +5,7 @@ import {
 import { Customer } from '../customers/customer.entity';
 import { Vehicle } from '../vehicles/vehicle.entity';
 import { User } from '../users/user.entity';
+import { Sede } from '../sedes/sede.entity';
 
 @Entity('orders')
 export class Order {
@@ -39,6 +40,22 @@ export class Order {
 
   @Column({ type: 'text', nullable: true })
   pertenencias: string;
+
+  // Sede a la que pertenece la orden
+  @Column({ name: 'sede_id', type: 'varchar', length: 36, nullable: true })
+  sede_id: string | null;
+
+  @ManyToOne(() => Sede, { nullable: true, eager: true })
+  @JoinColumn({ name: 'sede_id' })
+  sede: Sede | null;
+
+  // Usuario que recibió el vehículo
+  @Column({ name: 'recibido_por_id', type: 'varchar', length: 36, nullable: true })
+  recibido_por_id: string | null;
+
+  @ManyToOne(() => User, { nullable: true, eager: true })
+  @JoinColumn({ name: 'recibido_por_id' })
+  recibidoPor: User | null;
 
   // Cotización documento
   @Column({ name: 'cotizacion_doc_nombre', length: 255, nullable: true })
@@ -85,7 +102,7 @@ export class Order {
   @Column({ name: 'gerente_id', type: 'varchar', length: 64, nullable: true })
   gerente_id: string | null;
 
-  // Responsables directos por etapa (CAMBIO 2)
+  // Responsables directos por etapa
   @Column({ name: 'responsable_etapa1_id', type: 'varchar', length: 64, nullable: true })
   responsable_etapa1_id: string | null;
 

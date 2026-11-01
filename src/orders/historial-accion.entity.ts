@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { Order } from './order.entity';
 import { User } from '../users/user.entity';
+import { Sede } from '../sedes/sede.entity';
 
 @Entity('historial_acciones')
 export class HistorialAccion {
@@ -27,6 +28,13 @@ export class HistorialAccion {
   @ManyToOne(() => User, { eager: true, nullable: true })
   @JoinColumn({ name: 'user_id' })
   user: User | null;
+
+  @Column({ name: 'sede_id', type: 'varchar', length: 36, nullable: true })
+  sede_id: string | null;
+
+  @ManyToOne(() => Sede, { eager: true, nullable: true })
+  @JoinColumn({ name: 'sede_id' })
+  sede: Sede | null;
 
   @Column({ type: 'int' })
   etapa: number; // 1 a 5

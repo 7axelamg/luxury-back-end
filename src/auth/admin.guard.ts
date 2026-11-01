@@ -22,9 +22,12 @@ export class AdminGuard implements CanActivate {
           process.env.JWT_SECRET || 'luxury_secret_key_2026',
         );
         user = {
-          id: decoded.sub,
+          id: decoded.sub || decoded.userId,
+          userId: decoded.userId || decoded.sub,
           username: decoded.username,
-          role: decoded.role,
+          role: decoded.role || decoded.rol,
+          rol: decoded.rol || decoded.role,
+          sedeId: decoded.sedeId || null,
         };
         request.user = user;
       } catch {
@@ -36,18 +39,13 @@ export class AdminGuard implements CanActivate {
       throw new UnauthorizedException('No autenticado. Inicie sesión para acceder.');
     }
 
-    const role = (user.role || '').toUpperCase();
-    if (
-      role === 'ADMINISTRADOR' ||
-      role === 'SUPER_ADMIN' ||
-      role === 'ADMIN' ||
-      role === 'GERENTE_COMERCIAL'
-    ) {
+    const role = (user.role || user.rol || '').toUpperCase();
+    if (role === 'SUPER_ADMIN') {
       return true;
     }
 
     throw new ForbiddenException(
-      'Acceso denegado: Se requiere rol de SUPER_ADMIN, ADMINISTRADOR o GERENTE_COMERCIAL.',
+      'Acceso denegado: Se requiere rol de SUPER_ADMIN.',
     );
   }
 }

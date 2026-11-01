@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order } from './order.entity';
@@ -6,6 +6,7 @@ import { Customer } from '../customers/customer.entity';
 import { Vehicle } from '../vehicles/vehicle.entity';
 import { HistorialAccion } from './historial-accion.entity';
 import { User } from '../users/user.entity';
+import { Sede } from '../sedes/sede.entity';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -21,6 +22,8 @@ export class OrdersService implements OnModuleInit {
     private readonly historyRepo: Repository<HistorialAccion>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(Sede)
+    private readonly sedeRepo: Repository<Sede>,
   ) {}
 
   /** Inicializa nombres descriptivos en usuarios si están vacíos */
@@ -47,11 +50,34 @@ export class OrdersService implements OnModuleInit {
     }
   }
 
-  async findAll(): Promise<any[]> {
+  /**
+   * Visibilidad de órdenes según rol:
+   * - RECEPCIONISTA, JEFE_DE_PATIO, TECNICO y LUBRICADOR ven solo órdenes de su sede.
+   * - GERENTE_COMERCIAL, ADMINISTRADOR y SUPER_ADMIN ven todas, con filtro opcional por sede.
+   */
+  async findAll(user?: any, filterSedeId?: string): Promise<any[]> {
+    const role = (user?.role || user?.rol || '').toUpperCase().trim().replace(/[\s-]+/g, '_');
+    const operativeRoles = ['RECEPCIONISTA', 'JEFE_DE_PATIO', 'TECNICO', 'LUBRICADOR'];
+    const adminRoles = ['GERENTE_COMERCIAL', 'ADMINISTRADOR', 'SUPER_ADMIN', 'ADMIN'];
+
+    const where: any = {};
+
+    if (user && operativeRoles.includes(role)) {
+      const userSedeId = user.sedeId || (await this.getUserSedeId(user.id || user.userId));
+      where.sede_id = userSedeId || '__SIN_SEDE__';
+    } else if (adminRoles.includes(role) || !user) {
+      if (filterSedeId && filterSedeId.trim()) {
+        where.sede_id = filterSedeId.trim();
+      }
+    }
+
     const orders = await this.orderRepo.find({
+      where,
       relations: {
         customer: true,
         vehicle: true,
+        sede: true,
+        recibidoPor: true,
         recepcionista: true,
         responsable_etapa1: true,
         responsable_etapa2: true,
@@ -64,12 +90,14 @@ export class OrdersService implements OnModuleInit {
     return orders.map((o) => this.mapToDto(o));
   }
 
-  async findOne(id: string): Promise<any> {
+  async findOne(id: string, user?: any): Promise<any> {
     const order = await this.orderRepo.findOne({
       where: { id },
       relations: {
         customer: true,
         vehicle: true,
+        sede: true,
+        recibidoPor: true,
         recepcionista: true,
         responsable_etapa1: true,
         responsable_etapa2: true,
@@ -79,48 +107,74 @@ export class OrdersService implements OnModuleInit {
       },
     });
     if (!order) throw new NotFoundException(`Orden ${id} no encontrada`);
+
+    if (user) {
+      const role = (user.role || user.rol || '').toUpperCase().trim().replace(/[\s-]+/g, '_');
+      const operativeRoles = ['RECEPCIONISTA', 'JEFE_DE_PATIO', 'TECNICO', 'LUBRICADOR'];
+      if (operativeRoles.includes(role)) {
+        const userSedeId = user.sedeId || (await this.getUserSedeId(user.id || user.userId));
+        if (order.sede_id && userSedeId && order.sede_id !== userSedeId) {
+          throw new NotFoundException(`Orden ${id} no encontrada`);
+        }
+      }
+    }
+
     return this.mapToDto(order);
   }
 
-  /** GET /orders/:id/history — Devuelve el historial completo con nombres de usuario */
+  /** GET /orders/:id/history — Devuelve el historial completo con nombres de usuario y sede */
   async getOrderHistory(orderId: string): Promise<any[]> {
     const items = await this.historyRepo.find({
       where: { order_id: orderId },
-      relations: { user: true },
+      relations: { user: true, sede: true },
       order: { fecha: 'ASC' },
     });
 
     return items.map((h) => this.formatHistoryItem(h));
   }
 
-  /** POST /orders/:id/history — Registra una acción directa (ej: ítem marcado en etapa 3) */
+  /** POST /orders/:id/history — Registra una acción directa */
   async logAction(
     orderId: string,
     dto: { etapa: number; accion: string; detalle?: string },
-    userId?: string,
+    user?: any,
   ): Promise<any> {
     const order = await this.orderRepo.findOne({ where: { id: orderId } });
     if (!order) throw new NotFoundException(`Orden ${orderId} no encontrada`);
 
+    const userObj = typeof user === 'object' && user !== null ? user : null;
+    const userId = typeof user === 'string' ? user : (userObj?.id || userObj?.userId);
+    let userSedeId = userObj?.sedeId;
+
+    if (userId && !userSedeId) {
+      userSedeId = await this.getUserSedeId(userId);
+    }
+
     const effectiveUserId = userId || (await this.getDefaultUserForStage(dto.etapa || 3));
+    const effectiveSedeId = userSedeId || order.sede_id;
 
     const historyItem = new HistorialAccion();
     historyItem.order_id = orderId;
     historyItem.user_id = effectiveUserId;
+    historyItem.sede_id = effectiveSedeId;
     historyItem.etapa = dto.etapa || 3;
     historyItem.accion = dto.accion || 'Marcó ítem de trabajo como realizado';
     historyItem.detalle = dto.detalle || '';
+    historyItem.fecha = new Date();
 
     const saved = await this.historyRepo.save(historyItem);
-    const withUser = await this.historyRepo.findOne({
+    const withRelations = await this.historyRepo.findOne({
       where: { id: saved.id },
-      relations: { user: true },
+      relations: { user: true, sede: true },
     });
-    return this.formatHistoryItem(withUser || saved);
+    return this.formatHistoryItem(withRelations || saved);
   }
 
-  async create(dto: any, userId?: string): Promise<any> {
-    // Validaciones de formato y reglas de negocio
+  /**
+   * Crea una orden.
+   * `recibidoPorId` y `sedeId` provienen SIEMPRE del JWT, nunca del body.
+   */
+  async create(dto: any, userOrId?: any): Promise<any> {
     if (!dto.nombreCliente || !dto.nombreCliente.trim()) {
       throw new BadRequestException('El nombre del cliente es obligatorio (mínimo 3 caracteres)');
     }
@@ -172,10 +226,23 @@ export class OrdersService implements OnModuleInit {
       await this.vehicleRepo.save(vehicle);
     }
 
-    // 3. Resolver usuario que ingresa el vehículo (del JWT o recepcionista por defecto)
+    // 3. Resolver usuario y sede desde el JWT (NUNCA del body)
+    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : null;
+    const userId = typeof userOrId === 'string' ? userOrId : (userObj?.id || userObj?.userId);
+    let userSedeId = userObj?.sedeId;
+
+    if (userId && !userSedeId) {
+      userSedeId = await this.getUserSedeId(userId);
+    }
+
+    if (!userSedeId) {
+      const defaultSede = await this.sedeRepo.findOne({ where: { activa: true }, order: { created_at: 'ASC' } });
+      userSedeId = defaultSede?.id || null;
+    }
+
     const effectiveUserId = userId || (await this.getDefaultUserForStage(1));
 
-    // 4. Crear orden
+    // 4. Crear orden con recibidoPorId y sedeId
     const orderId = dto.id || this.generateOrderId();
     const order = new Order();
     order.id = orderId;
@@ -186,19 +253,23 @@ export class OrdersService implements OnModuleInit {
     order.kilometraje = dto.kilometraje;
     order.observaciones = dto.observaciones || '';
     order.pertenencias = dto.pertenencias || '';
+    order.recibido_por_id = effectiveUserId;
     order.recepcionista_id = effectiveUserId;
+    order.sede_id = userSedeId;
+
     const saved = await this.orderRepo.save(order);
 
-    // 5. CAMBIO 1: Insertar automáticamente en historial_acciones
+    // 5. Insertar en historial_acciones con userId, sedeId, fecha y hora
     const historyItem = new HistorialAccion();
     historyItem.order_id = saved.id;
     historyItem.user_id = effectiveUserId;
+    historyItem.sede_id = userSedeId;
     historyItem.etapa = 1;
     historyItem.accion = 'Ingresó el vehículo';
     historyItem.detalle = `Recepción inicial de ${vehicle.marca} ${vehicle.modelo} (Placa: ${vehicle.placa})`;
+    historyItem.fecha = new Date();
     await this.historyRepo.save(historyItem);
 
-    // Recargar con relaciones
     return this.findOne(saved.id);
   }
 
@@ -211,7 +282,15 @@ export class OrdersService implements OnModuleInit {
     return `ORD-${yyyy}${mm}${dd}-${String(num).padStart(3, '0')}`;
   }
 
-  async advanceStep(id: string, userId?: string): Promise<any> {
+  /**
+   * Avanza etapa guardando userId, sedeId, fecha y hora desde el JWT.
+   * SUPER_ADMIN puede ejecutar cualquier acción y queda registrado.
+   */
+  async advanceStep(
+    id: string,
+    user?: any,
+    advanceData?: { notificar?: boolean; motivo?: string; itemsPorCotizar?: number; hayItemsPorCotizar?: boolean },
+  ): Promise<any> {
     const order = await this.orderRepo.findOne({ where: { id } });
     if (!order) throw new NotFoundException(`Orden ${id} no encontrada`);
 
@@ -219,55 +298,120 @@ export class OrdersService implements OnModuleInit {
     let accion = '';
     let detalle = '';
 
-    // Usuario ejecutor (JWT del token o rol respectivo asignado)
-    const executorId = userId || (await this.getDefaultUserForStage(paso));
+    const userObj = typeof user === 'object' && user !== null ? user : null;
+    const userId = typeof user === 'string' ? user : (userObj?.id || userObj?.userId);
+    let userRole = userObj?.role || userObj?.rol;
+    let userSedeId = userObj?.sedeId;
+
+    if (userId && (!userRole || !userSedeId)) {
+      try {
+        const dbUser = await this.userRepo.findOne({ where: { id: userId } });
+        if (dbUser) {
+          if (!userRole) userRole = dbUser.role;
+          if (!userSedeId) userSedeId = dbUser.sedeId;
+        }
+      } catch {
+        // Ignorar si falla la consulta
+      }
+    }
+
+    const normRole = (userRole || '').toUpperCase().trim().replace(/[\s-]+/g, '_');
+    const isSuperAdmin = normRole === 'SUPER_ADMIN';
+
+    // SUPER_ADMIN puede ejecutar cualquier acción
+    if (!isSuperAdmin && paso === 1 && userRole) {
+      const allowedRoles = ['RECEPCIONISTA', 'JEFE_DE_PATIO', 'ADMINISTRADOR', 'ADMIN'];
+      if (!allowedRoles.includes(normRole)) {
+        throw new ForbiddenException('Solo RECEPCIONISTA y JEFE_DE_PATIO pueden avanzar esta etapa.');
+      }
+    }
+
+    const effectiveUserId = userId || (await this.getDefaultUserForStage(paso));
+    const effectiveSedeId = userSedeId || order.sede_id;
+    const now = new Date();
 
     if (paso === 1) {
+      const notificar = advanceData?.notificar === true;
+      const motivo = advanceData?.motivo ? advanceData.motivo.trim() : '';
+
       order.estado = 'Checklist Ingreso completado - Cotización & Facturación en proceso';
       order.paso_actual = 2;
-      order.responsable_etapa1_id = executorId;
-      order.fecha_etapa1 = new Date();
-      accion = 'Cerró Recepción & Checklist Ingreso';
-      detalle = 'Inspección de 6 categorías y inventario de vehículo finalizado';
+      order.responsable_etapa1_id = effectiveUserId;
+      order.fecha_etapa1 = now;
+
+      if (notificar) {
+        accion = 'Enviar a cotización y notificar';
+        detalle = motivo
+          ? `Notificación enviada a GERENTE_COMERCIAL, TECNICO y LUBRICADOR. Motivo: ${motivo}`
+          : 'Notificación enviada a GERENTE_COMERCIAL, TECNICO y LUBRICADOR para proceso de cotización.';
+      } else {
+        accion = 'Continuar sin notificar';
+        detalle = motivo ? `Motivo: ${motivo}` : 'Avanza a Cotización & Factura sin notificación.';
+      }
     } else if (paso >= 2) {
       order.estado = 'Entregado y Cerrado';
       order.paso_actual = 3;
-      order.fecha_cierre = new Date();
-      order.responsable_etapa2_id = executorId;
-      order.fecha_etapa2 = new Date();
+      order.fecha_cierre = now;
+      order.responsable_etapa2_id = effectiveUserId;
+      order.fecha_etapa2 = now;
       accion = 'Emitió Factura, Pago Confirmado y Vehículo Entregado';
       detalle = 'Liquidación final procesada, factura emitida a satisfacción y vehículo entregado al cliente';
     }
 
     await this.orderRepo.save(order);
 
-    // Registro automático en historial_acciones
+    // Registro en historial_acciones con userId, sedeId, fecha y hora
     if (accion) {
       const historyItem = new HistorialAccion();
       historyItem.order_id = order.id;
-      historyItem.user_id = executorId;
+      historyItem.user_id = effectiveUserId;
+      historyItem.sede_id = effectiveSedeId;
       historyItem.etapa = paso;
       historyItem.accion = accion;
       historyItem.detalle = detalle;
+      historyItem.fecha = now;
       await this.historyRepo.save(historyItem);
     }
 
     return this.findOne(id);
   }
 
-  async setStep(id: string, step: number): Promise<any> {
+  async setStep(id: string, step: number, user?: any): Promise<any> {
     const order = await this.orderRepo.findOne({ where: { id } });
     if (!order) throw new NotFoundException(`Orden ${id} no encontrada`);
+
+    const userObj = typeof user === 'object' && user !== null ? user : null;
+    const userId = typeof user === 'string' ? user : (userObj?.id || userObj?.userId);
+    let userSedeId = userObj?.sedeId;
+
+    if (userId && !userSedeId) {
+      userSedeId = await this.getUserSedeId(userId);
+    }
+
+    const effectiveUserId = userId || (await this.getDefaultUserForStage(step));
+    const effectiveSedeId = userSedeId || order.sede_id;
+    const now = new Date();
 
     order.paso_actual = step;
     if (step === 1) order.estado = 'Recepción y Checklist de Ingreso';
     else if (step === 2) order.estado = 'Cotización Checklist & Facturación';
     else if (step >= 3) {
       order.estado = 'Entregado y Cerrado';
-      order.fecha_cierre = new Date();
+      order.fecha_cierre = now;
     }
 
     await this.orderRepo.save(order);
+
+    const historyItem = new HistorialAccion();
+    historyItem.order_id = order.id;
+    historyItem.user_id = effectiveUserId;
+    historyItem.sede_id = effectiveSedeId;
+    historyItem.etapa = step;
+    historyItem.accion = `Cambio manual de etapa a paso ${step}`;
+    historyItem.detalle = `Actualización de estado a "${order.estado}"`;
+    historyItem.fecha = now;
+    await this.historyRepo.save(historyItem);
+
     return this.findOne(id);
   }
 
@@ -287,6 +431,15 @@ export class OrdersService implements OnModuleInit {
 
     await this.orderRepo.save(order);
     return this.findOne(id);
+  }
+
+  private async getUserSedeId(userId: string): Promise<string | null> {
+    try {
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      return user?.sedeId || null;
+    } catch {
+      return null;
+    }
   }
 
   /** Devuelve el ID de un usuario por rol para fallback en etapas */
@@ -314,6 +467,8 @@ export class OrdersService implements OnModuleInit {
       nombreUsuario: h.user?.nombre || h.user?.username || 'Usuario del Sistema',
       username: h.user?.username || '',
       rolUsuario: h.user?.role || '',
+      sedeId: h.sede_id || null,
+      sedeNombre: h.sede?.nombre || '',
       etapa: h.etapa,
       accion: h.accion,
       detalle: h.detalle,
@@ -337,6 +492,12 @@ export class OrdersService implements OnModuleInit {
       kilometraje: o.kilometraje,
       observaciones: o.observaciones,
       pertenencias: o.pertenencias,
+      sedeId: o.sede_id || null,
+      sedeNombre: o.sede?.nombre || '',
+      recibidoPorId: o.recibido_por_id || o.recepcionista_id || null,
+      recibidoPor: o.recibidoPor
+        ? (o.recibidoPor.nombre || o.recibidoPor.username)
+        : (o.recepcionista ? (o.recepcionista.nombre || o.recepcionista.username) : 'Alejandro Gómez'),
       fechaIngreso: o.fecha_ingreso,
       fechaCierre: o.fecha_cierre,
       // Cotización
@@ -353,7 +514,7 @@ export class OrdersService implements OnModuleInit {
       decisionCliente: o.decision_cliente,
       pagoAcordado: o.pago_acordado,
       notasCliente: o.notas_cliente,
-      // Responsables directos (solo 2 etapas)
+      // Responsables directos
       recepcionista: o.recepcionista ? (o.recepcionista.nombre || o.recepcionista.username) : 'Alejandro Gómez',
       recepcionistaId: o.recepcionista_id,
       responsableEtapa1: o.responsable_etapa1 ? (o.responsable_etapa1.nombre || o.responsable_etapa1.username) : null,
@@ -432,6 +593,8 @@ export class OrdersService implements OnModuleInit {
     const userRecepcion = await this.userRepo.findOne({ where: { username: 'recepcion' } });
     const userJefe = await this.userRepo.findOne({ where: { username: 'jefe_patio' } });
     const userGerente = await this.userRepo.findOne({ where: { username: 'gerente' } });
+    const defaultSede = await this.sedeRepo.findOne({ where: { activa: true }, order: { created_at: 'ASC' } });
+    const defaultSedeId = defaultSede?.id || null;
 
     const results: string[] = [];
     for (const item of sampleData) {
@@ -473,7 +636,9 @@ export class OrdersService implements OnModuleInit {
       order.kilometraje = item.kilometraje;
       order.observaciones = item.observaciones;
       order.pertenencias = item.pertenencias;
+      order.recibido_por_id = userRecepcion?.id || null;
       order.recepcionista_id = userRecepcion?.id || null;
+      order.sede_id = defaultSedeId;
 
       const baseDate = new Date();
       if (item.pasoActual > 1) {
@@ -488,13 +653,13 @@ export class OrdersService implements OnModuleInit {
 
       await this.orderRepo.save(order);
 
-      // Sembrar historial limpio para 2 pasos
       const historyCount = await this.historyRepo.count({ where: { order_id: order.id } });
       if (historyCount === 0) {
         const hist: Partial<HistorialAccion>[] = [
           {
             order_id: order.id,
             user_id: userRecepcion?.id,
+            sede_id: defaultSedeId,
             etapa: 1,
             accion: 'Ingresó el vehículo',
             detalle: `Recepción inicial de ${vehicle.marca} ${vehicle.modelo}`,
@@ -506,6 +671,7 @@ export class OrdersService implements OnModuleInit {
           hist.push({
             order_id: order.id,
             user_id: userJefe?.id,
+            sede_id: defaultSedeId,
             etapa: 1,
             accion: 'Cerró Recepción & Checklist Ingreso',
             detalle: 'Checklist de 6 categorías e inventario de vehículo completado',
@@ -516,6 +682,7 @@ export class OrdersService implements OnModuleInit {
           hist.push({
             order_id: order.id,
             user_id: userGerente?.id,
+            sede_id: defaultSedeId,
             etapa: 2,
             accion: 'Emitió Factura y Cerró Orden',
             detalle: 'Cotización aprobada, factura emitida y vehículo entregado',
@@ -527,6 +694,7 @@ export class OrdersService implements OnModuleInit {
           const entry = new HistorialAccion();
           entry.order_id = h.order_id!;
           entry.user_id = h.user_id || null;
+          entry.sede_id = h.sede_id || defaultSedeId;
           entry.etapa = h.etapa!;
           entry.accion = h.accion!;
           entry.detalle = h.detalle || null;
@@ -538,6 +706,6 @@ export class OrdersService implements OnModuleInit {
       results.push(item.id);
     }
 
-    return { message: 'Datos de muestra (2 pasos) sembrados correctamente', total: results.length, orders: results };
+    return { message: 'Datos de muestra sembrados correctamente con sede y recibidoPorId', total: results.length, orders: results };
   }
 }

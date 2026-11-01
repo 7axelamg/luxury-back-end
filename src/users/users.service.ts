@@ -16,10 +16,12 @@ export class CreateUserDto {
   username: string;
   password?: string;
   role?: UserRole;
+  sedeId?: string;
   documento?: string;
   email?: string;
   telefono?: string;
   cargo?: string;
+  debeCambiarPassword?: boolean;
 }
 
 export class UpdateUserDto {
@@ -27,10 +29,13 @@ export class UpdateUserDto {
   nombre?: string;
   role?: UserRole;
   password?: string;
+  sedeId?: string;
+  activo?: boolean;
   documento?: string;
   email?: string;
   telefono?: string;
   cargo?: string;
+  debeCambiarPassword?: boolean;
   motivo_cambio_rol?: string;
 }
 
@@ -43,9 +48,10 @@ export class UsersService {
     private readonly auditRepo: Repository<RoleAuditLog>,
   ) {}
 
-  /** Lista todos los empleados/usuarios (sin exponer el hash de contraseña) */
+  /** Lista todos los empleados/usuarios con su sede asociada */
   async findAll(): Promise<any[]> {
     const users = await this.userRepo.find({
+      relations: { sede: true },
       order: { created_at: 'DESC' },
     });
     return users.map((u) => this.sanitize(u));
@@ -53,14 +59,17 @@ export class UsersService {
 
   /** Busca un usuario por ID */
   async findOne(id: string): Promise<any> {
-    const user = await this.userRepo.findOne({ where: { id } });
+    const user = await this.userRepo.findOne({
+      where: { id },
+      relations: { sede: true },
+    });
     if (!user) {
       throw new NotFoundException(`Usuario con ID ${id} no encontrado`);
     }
     return this.sanitize(user);
   }
 
-  /** Crea un empleado / usuario nuevo y registra la asignación de rol en auditoría */
+  /** Crea un usuario individual con contraseña temporal y cambio obligatorio */
   async createUser(dto: CreateUserDto, actorUser?: any): Promise<any> {
     if (!dto.username || !dto.username.trim()) {
       throw new BadRequestException('El nombre de usuario es obligatorio');
@@ -74,27 +83,57 @@ export class UsersService {
       );
     }
 
+    // Regla de seguridad: Eliminar cuentas genéricas o compartidas
+    const genericAccounts = [
+      'usuario',
+      'user',
+      'guest',
+      'invitado',
+      'compartido',
+      'compartida',
+      'shared',
+      'generico',
+      'generica',
+      'demo',
+      'taller',
+    ];
+    if (genericAccounts.includes(username)) {
+      throw new BadRequestException(
+        `No se permite crear cuentas genéricas o compartidas ("${username}"). Cada usuario debe ser individual y nominativo.`,
+      );
+    }
+
+    const nombre = (dto.nombre_completo || dto.nombre || '').trim();
+    if (!nombre) {
+      throw new BadRequestException('El nombre completo es obligatorio para cuentas individuales');
+    }
+
     const exists = await this.userRepo.findOne({ where: { username } });
     if (exists) {
       throw new ConflictException(`El usuario "${username}" ya existe en el sistema`);
     }
 
-    const password = dto.password && dto.password.trim() ? dto.password.trim() : 'Luxury2026*';
-    if (password.length < 6) {
-      throw new BadRequestException('La contraseña debe tener al menos 6 caracteres');
-    }
+    // Generar contraseña temporal si no se especifica
+    const generatedTempPassword =
+      dto.password && dto.password.trim().length >= 6
+        ? dto.password.trim()
+        : `Temp*${Math.random().toString(36).slice(-6)}!`;
 
     const user = new User();
     user.username = username;
-    user.nombre = (dto.nombre_completo || dto.nombre || '').trim();
+    user.nombre = nombre;
     user.documento = (dto.documento || '').trim();
     user.email = (dto.email || '').trim();
     user.telefono = (dto.telefono || '').trim();
     user.cargo = (dto.cargo || '').trim();
     user.role = dto.role || UserRole.RECEPCIONISTA;
+    user.sedeId = dto.sedeId || null;
     user.activo = true;
+    user.debeCambiarPassword = true; // Cambio obligatorio en el primer ingreso
+    user.intentosFallidos = 0;
+    user.bloqueadoHasta = null;
 
-    await user.setPassword(password);
+    await user.setPassword(generatedTempPassword);
 
     const saved = await this.userRepo.save(user);
 
@@ -107,19 +146,25 @@ export class UsersService {
       audit.previous_role = 'NINGUNO (CREACIÓN)';
       audit.new_role = saved.role;
       audit.assigned_by_id = actorUser?.id || null;
-      audit.assigned_by_username = actorUser?.username || 'ADMIN';
-      audit.motivo = 'Creación de cuenta de empleado y asignación de rol inicial';
+      audit.assigned_by_username = actorUser?.username || 'SUPER_ADMIN';
+      audit.motivo = 'Creación de cuenta individual y asignación de rol inicial';
       await this.auditRepo.save(audit);
     } catch (e) {
       console.error('Error al guardar log de auditoría:', e);
     }
 
-    return this.sanitize(saved);
+    return {
+      ...this.sanitize(saved),
+      temporaryPassword: generatedTempPassword,
+    };
   }
 
-  /** Actualiza datos de un empleado/usuario y registra cambio de rol si aplica */
+  /** Actualiza datos de un usuario */
   async updateUser(id: string, dto: UpdateUserDto, actorUser?: any): Promise<any> {
-    const user = await this.userRepo.findOne({ where: { id } });
+    const user = await this.userRepo.findOne({
+      where: { id },
+      relations: { sede: true },
+    });
     if (!user) {
       throw new NotFoundException(`Usuario con ID ${id} no encontrado`);
     }
@@ -131,26 +176,15 @@ export class UsersService {
     if (dto.email !== undefined) user.email = dto.email.trim();
     if (dto.telefono !== undefined) user.telefono = dto.telefono.trim();
     if (dto.cargo !== undefined) user.cargo = dto.cargo.trim();
+    if (dto.sedeId !== undefined) user.sedeId = dto.sedeId || null;
+    if (dto.activo !== undefined) user.activo = dto.activo;
+    if (dto.debeCambiarPassword !== undefined) user.debeCambiarPassword = dto.debeCambiarPassword;
 
-    // Verificación de cambio de rol y permisos
+    // Verificación de cambio de rol
     if (dto.role && dto.role !== user.role) {
-      const actorRole = (actorUser?.role || '').toUpperCase();
-      if (
-        actorRole !== 'SUPER_ADMIN' &&
-        actorRole !== 'GERENTE_COMERCIAL' &&
-        actorRole !== 'ADMINISTRADOR'
-      ) {
-        throw new ForbiddenException('Solo el Super Administrador y el Gerente Comercial pueden asignar roles');
-      }
-
-      if (actorUser?.id === user.id && actorRole !== 'SUPER_ADMIN') {
-        throw new ForbiddenException('No puedes cambiar tu propio rol en el sistema');
-      }
-
       const previousRole = user.role;
       user.role = dto.role;
 
-      // Registrar auditoría del cambio de rol
       try {
         const audit = new RoleAuditLog();
         audit.target_user_id = user.id;
@@ -159,15 +193,14 @@ export class UsersService {
         audit.previous_role = previousRole;
         audit.new_role = dto.role;
         audit.assigned_by_id = actorUser?.id || null;
-        audit.assigned_by_username = actorUser?.username || 'ADMIN';
-        audit.motivo = dto.motivo_cambio_rol || 'Reasignación de funciones / cargo';
+        audit.assigned_by_username = actorUser?.username || 'SUPER_ADMIN';
+        audit.motivo = dto.motivo_cambio_rol || 'Reasignación de funciones por SUPER_ADMIN';
         await this.auditRepo.save(audit);
       } catch (e) {
         console.error('Error al registrar auditoría de rol:', e);
       }
     }
 
-    // Si se envía una nueva contraseña
     if (dto.password && dto.password.trim().length > 0) {
       if (dto.password.trim().length < 6) {
         throw new BadRequestException('La contraseña debe tener al menos 6 caracteres');
@@ -179,15 +212,30 @@ export class UsersService {
     return this.sanitize(saved);
   }
 
-  /** Consulta el historial de cambios y asignaciones de roles */
-  async getRoleAuditLogs(): Promise<RoleAuditLog[]> {
-    return this.auditRepo.find({
-      order: { created_at: 'DESC' },
-      take: 100,
-    });
+  /** Restablece la contraseña generando una temporal y forzando cambio obligatorio */
+  async resetPassword(id: string, actorUser?: any): Promise<any> {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) {
+      throw new NotFoundException(`Usuario con ID ${id} no encontrado`);
+    }
+
+    const temporaryPassword = `Temp*${Math.random().toString(36).slice(-6)}!`;
+    await user.setPassword(temporaryPassword);
+    user.debeCambiarPassword = true;
+    user.intentosFallidos = 0;
+    user.bloqueadoHasta = null;
+
+    await this.userRepo.save(user);
+
+    return {
+      message: 'Contraseña restablecida exitosamente. El usuario deberá cambiarla en su próximo ingreso.',
+      userId: user.id,
+      username: user.username,
+      temporaryPassword,
+    };
   }
 
-  /** Desactiva un usuario (activo = false) */
+  /** Desactiva un usuario (nunca borrar usuarios de la BD) */
   async deactivate(id: string): Promise<any> {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) {
@@ -199,7 +247,7 @@ export class UsersService {
     return this.sanitize(saved);
   }
 
-  /** Reactiva un usuario (activo = true) */
+  /** Reactiva un usuario */
   async activate(id: string): Promise<any> {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) {
@@ -209,6 +257,14 @@ export class UsersService {
     user.activo = true;
     const saved = await this.userRepo.save(user);
     return this.sanitize(saved);
+  }
+
+  /** Consulta el historial de cambios y asignaciones de roles */
+  async getRoleAuditLogs(): Promise<RoleAuditLog[]> {
+    return this.auditRepo.find({
+      order: { created_at: 'DESC' },
+      take: 100,
+    });
   }
 
   /** Remueve la propiedad password del objeto devuelto */
